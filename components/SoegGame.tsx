@@ -1,27 +1,30 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import GameShell from './game/GameShell';
+import ModeSelector from './game/ModeSelector';
+import { useScore } from '@/hooks/useScore';
+import { useGameLog } from '@/hooks/useGameLog';
+import { getEasyNimMove, getHardNimMove } from '@/lib/nim';
+import type { GameMode, Player } from '@/types/game';
 
 const INITIAL_ROWS = [3, 5, 7] as const;
-const PLAYER_NAMES = ['Player 1', 'Player 2'] as const;
-const PLAYER_COLORS = ['text-blue-400', 'text-orange-400'] as const;
-const PLAYER_BORDERS = ['border-blue-500', 'border-orange-500'] as const;
 
-type Player = 0 | 1;
+type NimRows = [number, number, number];
 
-type GameState = {
-  rows: [number, number, number];
+interface SoegState {
+  rows: NimRows;
   currentPlayer: Player;
   selectedRow: number | null;
   removeCount: number;
   gameOver: boolean;
   loser: Player | null;
-};
+}
 
-function newGame(): GameState {
+function newGame(): SoegState {
   return {
-    rows: [...INITIAL_ROWS] as [number, number, number],
-    currentPlayer: (Math.floor(Math.random() * 2) as Player),
+    rows: [...INITIAL_ROWS] as NimRows,
+    currentPlayer: Math.floor(Math.random() * 2) as Player,
     selectedRow: null,
     removeCount: 1,
     gameOver: false,
@@ -29,191 +32,209 @@ function newGame(): GameState {
   };
 }
 
-function Sticks({
-  total,
-  current,
-  pending,
-  selected,
-}: {
-  total: number;
-  current: number;
-  pending: number;
-  selected: boolean;
-}) {
-  return (
-    <div className="flex items-end gap-0.5">
-      {Array.from({ length: total }, (_, i) => {
-        const isPresent = i < current;
-        const isPending = selected && isPresent && i >= current - pending;
-        return (
-          <div
-            key={i}
-            className={`w-2.5 rounded-t-sm transition-colors duration-100 ${
-              !isPresent
-                ? 'bg-transparent'
-                : isPending
-                ? 'bg-red-400'
-                : selected
-                ? 'bg-yellow-300'
-                : 'bg-amber-400'
-            }`}
-            style={{ height: 44 }}
-          />
-        );
-      })}
-    </div>
-  );
+function computeMove(state: SoegState, rowIndex: number, count: number): SoegState {
+  const rows = state.rows.map((r, i) => (i === rowIndex ? r - count : r)) as NimRows;
+  const isEmpty = rows.every((r) => r === 0);
+  return {
+    rows,
+    currentPlayer: isEmpty ? state.currentPlayer : ((1 - state.currentPlayer) as Player),
+    selectedRow: null,
+    removeCount: 1,
+    gameOver: isEmpty,
+    loser: isEmpty ? state.currentPlayer : null,
+  };
+}
+
+const P_COLORS = ['text-blue-400', 'text-orange-400'] as const;
+const P_BORDERS = ['border-blue-500', 'border-orange-500'] as const;
+
+function aiName(mode: GameMode) {
+  return mode === 'easy' ? 'AI (Easy)' : 'AI (Hard)';
 }
 
 export default function SoegGame() {
-  const [game, setGame] = useState<GameState>(newGame);
+  const [mode, setMode] = useState<GameMode>('2p');
+  const [game, setGame] = useState<SoegState>(newGame);
+  const score = useScore();
+  const log = useGameLog();
 
-  const selectRow = (rowIndex: number) => {
+  const p2Label = mode === '2p' ? 'Player 2' : aiName(mode);
+  const names: [string, string] = ['Player 1', p2Label];
+
+  const pName = (p: Player) => names[p];
+
+  const applyMove = (state: SoegState, rowIndex: number, count: number) => {
+    const next = computeMove(state, rowIndex, count);
+    log.addEntry(pName(state.currentPlayer), `removed ${count} from row ${rowIndex + 1}`);
+    if (next.gameOver) {
+      score.addWin((1 - next.loser!) as Player);
+      log.addEntry(pName(next.loser!), 'removed the last stick — loses');
+    }
+    setGame(next);
+  };
+
+  // AI move
+  useEffect(() => {
+    if (game.gameOver || game.currentPlayer !== 1 || mode === '2p') return;
+    const timer = setTimeout(() => {
+      const move =
+        mode === 'easy' ? getEasyNimMove(game.rows) : getHardNimMove(game.rows);
+      applyMove(game, move.row, move.count);
+    }, 700);
+    return () => clearTimeout(timer);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [game, mode]);
+
+  const handleRowClick = (rowIndex: number) => {
     if (game.gameOver || game.rows[rowIndex] === 0) return;
-    setGame((prev) => ({
-      ...prev,
-      selectedRow: prev.selectedRow === rowIndex ? null : rowIndex,
-      removeCount: 1,
-    }));
-  };
-
-  const adjustCount = (delta: number) => {
-    if (game.selectedRow === null) return;
-    const max = game.rows[game.selectedRow];
-    setGame((prev) => ({
-      ...prev,
-      removeCount: Math.max(1, Math.min(max, prev.removeCount + delta)),
-    }));
-  };
-
-  const confirmMove = () => {
-    if (game.selectedRow === null || game.gameOver) return;
+    if (mode !== '2p' && game.currentPlayer === 1) return;
     setGame((prev) => {
-      const newRows = [...prev.rows] as [number, number, number];
-      newRows[prev.selectedRow!] -= prev.removeCount;
-      const isEmpty = newRows.every((r) => r === 0);
-      return {
-        rows: newRows,
-        currentPlayer: isEmpty
-          ? prev.currentPlayer
-          : ((1 - prev.currentPlayer) as Player),
-        selectedRow: null,
-        removeCount: 1,
-        gameOver: isEmpty,
-        loser: isEmpty ? prev.currentPlayer : null,
-      };
+      if (prev.selectedRow === rowIndex) {
+        const max = prev.rows[rowIndex];
+        return {
+          ...prev,
+          removeCount: prev.removeCount < max ? prev.removeCount + 1 : max,
+        };
+      }
+      return { ...prev, selectedRow: rowIndex, removeCount: 1 };
     });
+  };
+
+  const handleConfirm = () => {
+    if (game.selectedRow === null || game.gameOver) return;
+    applyMove(game, game.selectedRow, game.removeCount);
+  };
+
+  const handleModeChange = (m: GameMode) => {
+    setMode(m);
+    setGame(newGame());
+    log.clear();
+  };
+
+  const handleRestart = () => {
+    setGame(newGame());
+    log.clear();
   };
 
   const { rows, currentPlayer, selectedRow, removeCount, gameOver, loser } = game;
   const winner = loser !== null ? ((1 - loser) as Player) : null;
+  const isAITurn = mode !== '2p' && currentPlayer === 1 && !gameOver;
 
   return (
-    <div className="p-10 max-w-lg">
+    <GameShell
+      score={{ names, wins: score.wins }}
+      log={log.entries}
+      onResetScore={score.reset}
+    >
       <h1 className="text-2xl font-bold text-white mb-1">Soeg</h1>
-      <p className="text-gray-500 text-sm mb-8">
-        Remove sticks from one row per turn. The player who removes the last
-        stick <span className="text-red-400">loses</span>.
+      <p className="text-gray-500 text-sm mb-5">
+        Remove sticks from one row per turn. Last to remove{' '}
+        <span className="text-red-400">loses</span>.
       </p>
+
+      <ModeSelector mode={mode} onChange={handleModeChange} />
 
       {/* Status */}
       <div
-        className={`mb-6 px-4 py-3 rounded-lg bg-gray-800 border-l-4 ${
-          gameOver ? 'border-gray-600' : PLAYER_BORDERS[currentPlayer]
+        className={`mt-5 mb-6 px-4 py-3 rounded-lg bg-gray-800 border-l-4 ${
+          gameOver ? 'border-gray-600' : P_BORDERS[currentPlayer]
         }`}
       >
         {gameOver ? (
           <span>
-            <span className={`font-bold ${PLAYER_COLORS[winner!]}`}>
-              {PLAYER_NAMES[winner!]} wins
-            </span>
+            <span className={`font-bold ${P_COLORS[winner!]}`}>{names[winner!]} wins</span>
             <span className="text-gray-500 text-sm ml-2">
-              — {PLAYER_NAMES[loser!]} removed the last stick
+              — {names[loser!]} removed the last stick
             </span>
           </span>
+        ) : isAITurn ? (
+          <span className={`font-semibold ${P_COLORS[1]}`}>{p2Label} is thinking…</span>
         ) : (
           <span>
-            <span className={`font-semibold ${PLAYER_COLORS[currentPlayer]}`}>
-              {PLAYER_NAMES[currentPlayer]}
+            <span className={`font-semibold ${P_COLORS[currentPlayer]}`}>
+              {names[currentPlayer]}
             </span>
             <span className="text-gray-500 text-sm ml-2">
-              {selectedRow === null ? '— select a row' : `— row ${selectedRow + 1} selected`}
+              {selectedRow === null
+                ? '— click a row to select sticks'
+                : `— ${removeCount} stick${removeCount > 1 ? 's' : ''} from row ${selectedRow + 1} (click again to add more)`}
             </span>
           </span>
         )}
       </div>
 
-      {/* Board */}
-      <div className="space-y-2 mb-6">
-        {rows.map((count, rowIndex) => (
-          <button
-            key={rowIndex}
-            onClick={() => selectRow(rowIndex)}
-            disabled={gameOver || count === 0}
-            className={`w-full flex items-center gap-4 px-4 py-3 rounded-lg transition-all ${
-              selectedRow === rowIndex
-                ? 'bg-gray-700 ring-2 ring-yellow-500'
-                : count === 0
-                ? 'bg-gray-900 opacity-30 cursor-not-allowed'
-                : 'bg-gray-800 hover:bg-gray-700 cursor-pointer'
-            }`}
-          >
-            <span className="text-gray-500 text-xs w-6 shrink-0 text-right">
-              R{rowIndex + 1}
-            </span>
-            <Sticks
-              total={INITIAL_ROWS[rowIndex]}
-              current={count}
-              pending={selectedRow === rowIndex ? removeCount : 0}
-              selected={selectedRow === rowIndex}
-            />
-            <span className="text-gray-600 text-xs ml-auto tabular-nums">{count}</span>
-          </button>
-        ))}
+      {/* Board — centered */}
+      <div className="flex flex-col items-center gap-2">
+        {rows.map((count, rowIndex) => {
+          const total = INITIAL_ROWS[rowIndex];
+          const isSelected = selectedRow === rowIndex;
+          const pending = isSelected ? removeCount : 0;
+
+          return (
+            <button
+              key={rowIndex}
+              onClick={() => handleRowClick(rowIndex)}
+              disabled={gameOver || count === 0 || isAITurn}
+              className={`flex items-center gap-4 px-5 py-3 rounded-xl transition-all select-none ${
+                isSelected
+                  ? 'bg-gray-700 ring-2 ring-yellow-500'
+                  : count === 0
+                  ? 'bg-gray-900 opacity-25 cursor-not-allowed'
+                  : isAITurn
+                  ? 'bg-gray-800 cursor-not-allowed'
+                  : 'bg-gray-800 hover:bg-gray-700 cursor-pointer active:scale-95'
+              }`}
+            >
+              <span className="text-gray-500 text-xs w-5 text-right shrink-0">
+                R{rowIndex + 1}
+              </span>
+
+              {/* Sticks */}
+              <div className="flex items-end gap-0.5">
+                {Array.from({ length: total }, (_, i) => {
+                  const isPresent = i < count;
+                  const isPending = isSelected && isPresent && i >= count - pending;
+                  return (
+                    <div
+                      key={i}
+                      style={{ width: 10, height: 44 }}
+                      className={`rounded-t-sm transition-colors duration-100 ${
+                        !isPresent
+                          ? 'bg-transparent'
+                          : isPending
+                          ? 'bg-red-400'
+                          : isSelected
+                          ? 'bg-yellow-300'
+                          : 'bg-amber-400'
+                      }`}
+                    />
+                  );
+                })}
+              </div>
+
+              <span className="text-gray-600 text-xs w-4 text-left shrink-0">{count}</span>
+            </button>
+          );
+        })}
       </div>
 
-      {/* Move controls */}
-      {selectedRow !== null && !gameOver && (
-        <div className="flex items-center gap-3 bg-gray-800 rounded-lg px-4 py-3 mb-4">
-          <span className="text-gray-400 text-sm">Remove</span>
-          <div className="flex items-center gap-1">
-            <button
-              onClick={() => adjustCount(-1)}
-              disabled={removeCount <= 1}
-              className="w-7 h-7 rounded bg-gray-700 hover:bg-gray-600 text-white text-sm disabled:opacity-25 disabled:cursor-not-allowed transition-colors"
-            >
-              −
-            </button>
-            <span className="text-white font-mono font-bold w-8 text-center">
-              {removeCount}
-            </span>
-            <button
-              onClick={() => adjustCount(1)}
-              disabled={removeCount >= rows[selectedRow]}
-              className="w-7 h-7 rounded bg-gray-700 hover:bg-gray-600 text-white text-sm disabled:opacity-25 disabled:cursor-not-allowed transition-colors"
-            >
-              +
-            </button>
-          </div>
-          <span className="text-gray-600 text-xs">from row {selectedRow + 1}</span>
+      {/* Actions */}
+      <div className="mt-6 flex gap-3 justify-center">
+        {!gameOver && selectedRow !== null && !isAITurn && (
           <button
-            onClick={confirmMove}
-            className="ml-auto px-4 py-1.5 bg-yellow-600 hover:bg-yellow-500 text-black font-bold rounded text-sm transition-colors"
+            onClick={handleConfirm}
+            className="px-5 py-2 bg-yellow-600 hover:bg-yellow-500 text-black font-bold rounded-lg text-sm transition-colors"
           >
-            Confirm
+            Remove {removeCount} stick{removeCount > 1 ? 's' : ''}
           </button>
-        </div>
-      )}
-
-      {/* Restart */}
-      {gameOver && (
+        )}
         <button
-          onClick={() => setGame(newGame())}
-          className="w-full py-2 bg-gray-800 hover:bg-gray-700 text-white rounded-lg text-sm transition-colors"
+          onClick={handleRestart}
+          className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg text-sm transition-colors"
         >
-          Play Again
+          {gameOver ? 'Play Again' : 'Restart'}
         </button>
-      )}
-    </div>
+      </div>
+    </GameShell>
   );
 }

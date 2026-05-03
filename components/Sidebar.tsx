@@ -4,7 +4,10 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 
-const GAMES = [{ name: 'Soeg', href: '/games/soeg' }];
+const GAMES = [
+  { name: 'Soeg', href: '/games/soeg' },
+  { name: 'Tic-Tac-Toe', href: '/games/tictactoe' },
+];
 
 export default function Sidebar() {
   const [gamesOpen, setGamesOpen] = useState(true);
