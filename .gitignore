@@ -1,2 +1,10 @@
 .env
 *.local.*
+
+.vercel
+.env*.local
+
+# Next.js
+.next/
+node_modules/
+dev.log
